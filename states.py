@@ -9,7 +9,7 @@ import jsonpickle
 import pandas as pd
 import yaml
 
-from FeatureCloud.app.engine.app import AppState, app_state, Role, LogLevel, State
+from FeatureCloud.app.engine.app import AppState, app_state, Role, LogLevel, State, SMPCOperation
 
 smpc = True
 
@@ -35,6 +35,8 @@ class LocalComputationState(AppState):
     def run(self) -> str or None:
         self.store('iteration', self.load('iteration') + 1)
         data_to_send = [1, 2, 3, 4]
+        if smpc:
+            self.configure_smpc(operation=SMPCOperation.ADD)
         self.send_data_to_coordinator(data_to_send, use_smpc=smpc)
 
         if self.is_coordinator:
@@ -71,7 +73,7 @@ class GlobalAggregationState(AppState):
     def run(self) -> str or None:
         print("Global computation")
         if smpc:
-            data = self.await_data(is_json=True)
+            data = self.await_data(1, unwrap=True, is_json=True)
         else:
             data = self.gather_data()
         print("Received data of all clients")
