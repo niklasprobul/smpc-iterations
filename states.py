@@ -1,17 +1,10 @@
-import os
-import shutil
-import threading
 import time
+import pickle
 
-import numpy as np
-import joblib
-import jsonpickle
-import pandas as pd
-import yaml
-
-from FeatureCloud.app.engine.app import AppState, app_state, Role, LogLevel, State, SMPCOperation
+from FeatureCloud.app.engine.app import AppState, app_state, Role, SMPCOperation
 
 smpc = True
+sleep = False
 
 @app_state('initial', Role.BOTH)
 class InitialState(AppState):
@@ -20,7 +13,6 @@ class InitialState(AppState):
         self.register_transition('local computation', Role.BOTH)
         
     def run(self) -> str or None:
-        print("Initializing")
         self.store('iteration', 0)
         return 'local computation'
 
@@ -33,26 +25,30 @@ class LocalComputationState(AppState):
         self.register_transition('wait for aggregation', Role.PARTICIPANT)
   
     def run(self) -> str or None:
-        print("Local computation")
-        print('iteration')
-        print(self.load('iteration'))
-        self.store('iteration', self.load('iteration') + 1)
+        print('Local computation')
+        iteration = self.load('iteration')
+        print(f'iteration: {iteration}')
         
+        self.store('iteration', iteration + 1)
+
+        if len(self._app.data_outgoing) > 0:
+            outgoing = pickle.loads(self._app.data_outgoing[0][0])
+            print(f'data_outgoing: {outgoing}')
+            raise Exception('Data outgoing not empty')
+
         if self.is_coordinator:
-            data_to_send = [1, 1, 1, 1]
-            print('data_outgoing')
-            print(self._app.data_outgoing)
+            data_to_send = [1, 1, 1, 1] 
         else:
             data_to_send = [0, 0, 0, 0]
+        
         if smpc:
             self.configure_smpc(operation=SMPCOperation.ADD)
         self.send_data_to_coordinator(data_to_send, use_smpc=smpc)
-        print("send data to coordinator")
+        print('Sending computation data to coordinator')
 
         if self.is_coordinator:
             return 'global aggregation'
         else:
-            print(f'[CLIENT] Sending computation data to coordinator', flush=True)
             return 'wait for aggregation'
                 
 
@@ -64,26 +60,15 @@ class WaitForAggregationState(AppState):
         self.register_transition('terminal', Role.PARTICIPANT)
      
     def run(self) -> str or None:
-        print("Wait for aggregation")
+        print('Wait for aggregation')
         data = self.await_data()
-        print("Received aggregated data")
+        print(f'Received aggregated data: {data}')
 
-        self.send_data_to_coordinator([0], use_smpc=False)
-        print("Send okay to the coordinator")
+        self.send_data_to_coordinator(0, use_smpc=False)
+        print('Send okay to the coordinator')
         
-        check = self.await_data()
-        print("Received okay from coordinator")
-        
-        if check != [0]:
-            print('data')
-            print(data)
-            print('check')
-            print(check)
-            raise Exception('SMPC not working - Wait for aggregation')
-        
-        self.send_data_to_coordinator([0], use_smpc=False)
-        print("Send okay second time to the coordinator")
-
+        okay = self.await_data()
+        print(f'Received okay from coordinator: {okay}')
 
         if self.load('iteration') < 2:
             return 'local computation'
@@ -99,50 +84,27 @@ class GlobalAggregationState(AppState):
         self.register_transition('terminal', Role.COORDINATOR)
 
     def run(self) -> str or None:
-        print("Global computation")
-        print('data_incoming')
-        print(self._app.data_incoming)
-        print('data_outgoing')
-        print(self._app.data_outgoing)
-
         if smpc:
-            data = self.await_data(1, unwrap=True, is_json=True)
+            data = self.aggregate_data(SMPCOperation.ADD, use_smpc=smpc)
+            #data = self.await_data(1, unwrap=True, is_json=True)
         else:
             data = self.gather_data()
-        print("Received data of all clients")
+        print(f'Received data of all clients: {data}')
         
         self.broadcast_data(data, send_to_self=False)
-        print(f'[COORDINATOR] Broadcasting computation data to clients', flush=True)
+        print('Broadcasting computation data to clients')
         
-        self.send_data_to_coordinator([2], use_smpc=False)
-        print("Coordinator sends value '2' to himself")
+        self.send_data_to_coordinator(0, use_smpc=False)
+        print('Coordinator sends okay')
         
-        check = np.sum(self.gather_data())
-        print("Received okay from all clients")
-        
-        print('check')
-        print(check)
+        okay = self.gather_data()
+        print(f'Receive okay from all clients: {okay}')
 
-        if check != [2]:
-            print('data')
-            print(data)
-            print('check')
-            print(check)
-            raise Exception('SMPC not working - Global computation')
+        self.broadcast_data(0, send_to_self=False)
+        print('Send okay to all clients')
 
-        self.broadcast_data([0], send_to_self=False)
-        print("Send okay to all clients")
-
-        self.send_data_to_coordinator([2], use_smpc=False)
-        print("Coordinator sends value '2' second time to himself")
-        
-        check = np.sum(self.gather_data())
-        print("Received okay second time from all clients")
-
-        print('data_incoming')
-        print(self._app.data_incoming)
-        print('data_outgoing')
-        print(self._app.data_outgoing)
+        if sleep:
+            time.sleep(100)
 
         if self.load('iteration') < 2:
             return 'local computation'
